@@ -1,6 +1,6 @@
 /*
  * servo.h
- * Copyright (C) 2018  jasLogic
+ * Copyright (C) 2019  jasLogic
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -16,42 +16,26 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-#ifndef _SERVO_H_
-#define _SERVO_H_
+#include <stdio.h>
+#include <unistd.h>
 
-#include <stdint.h>
-#include <mipea/dma.h>
+#include "src/servo.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif//__cplusplus
+int
+main(void)
+{
+    servo_init();
 
-struct servo {
-    int pin;
-    unsigned int start; // in us
-    unsigned int stop; // in us
-};
+    servo_add(14);
 
-struct servos {
-    struct servo *servo;
-    unsigned int length;
-} servos;
+    servo_set(14, 1000);
+    servo_update_cbs();
+    sleep(1);
+    
+    servo_set(14, 2000);
+    servo_update_cbs();
+    sleep(2);
 
-dma_phy_mem_blk_t gpio_masks_data;
-dma_phy_mem_blk_t cbs_data;
-
-int     servo_init(void);
-void    servo_uninit(void);
-
-void    servo_update_cb(void);
-
-int servo_add(uint32_t pin);
-int servo_remove(uint32_t pin);
-
-int servo_set(uint32_t pin, unsigned int pulsewidth); // in us
-
-#ifdef  __cplusplus
+    servo_uninit();
+    return 0;
 }
-#endif//__cplusplus
-
-#endif//_SERVO_H_

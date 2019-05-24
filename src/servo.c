@@ -35,7 +35,6 @@ servo_init(void)
 
     // ***** PWM ******
 	pwm_channel_config_t config = {
-		PWM_CHANNEL0,
 		{{
             PWM_CTL_MODE_PWM,
 		    PWM_RPTL_STOP,
@@ -47,7 +46,7 @@ servo_init(void)
 		50,
 		10
 	};
-	pwm_configure(&config);
+	pwm_configure(PWM_CHANNEL0, &config);
 	PWM->DMAC = (1 << 31) | (15 << 8) | (15 << 0); // no idea what threshhold is
 	pwm_enable(PWM_CHANNEL0);
 
@@ -64,6 +63,13 @@ servo_uninit(void)
 
     // stop dma
     DMA_14->CS = 1 << 31; // reset signal + all other bits reset
+    // free physical memory
+    if (gpio_masks_data.mem != NULL) {
+        dma_free_phy_mem(&gpio_masks_data);
+    }
+    if (cbs_data.mem != NULL) {
+        dma_free_phy_mem(&cbs_data);
+    }
     // stop pwm
     pwm_disable(PWM_CHANNEL0);
 
@@ -72,17 +78,14 @@ servo_uninit(void)
     gpio_unmap();
 }
 
-void
-servo_update_cb(void)
+int
+servo_update_cbs(void)
 {
-    DMA_14->CS = 1 << 31; // reset signal + all other bits reset
-
-    if (gpio_masks_data.mem != NULL) {
-        dma_free_phy_mem(&gpio_masks_data); // free previous allocs
-    }
-    if (cbs_data.mem != NULL) {
-        dma_free_phy_mem(&cbs_data);
-    }
+    // save old memory and free later
+    // i keep the old pwm signal running because else there is a huge performance issue
+    // so i save the old memory blocks and free them after the takeover
+    dma_phy_mem_blk_t prev_gpio_masks_data = gpio_masks_data;
+    dma_phy_mem_blk_t prev_cbs_data = cbs_data;
 
     unsigned int num_samples = 20000;
     unsigned int num_cbs = num_samples + 2 * servos.length;
@@ -90,7 +93,8 @@ servo_update_cb(void)
 
     dma_alloc_phy_mem(&gpio_masks_data, servos.length * sizeof(uint32_t));
     uint32_t *gpio_masks = (uint32_t *)gpio_masks_data.mem;
-    for (unsigned int i = 0; i < servos.length; ++i) {
+    unsigned int i;
+    for (i = 0; i < servos.length; ++i) {
         gpio_masks[i] = 1 << servos.servo[i].pin;
     }
 
@@ -98,8 +102,9 @@ servo_update_cb(void)
     dma_cb_t *cbs = (dma_cb_t *)cbs_data.mem;
 
     unsigned int cbi = 0;
-    for (unsigned int i = 0; i < num_samples; ++i) {
-        for (unsigned int j = 0; j < servos.length; ++j) {
+    for (i = 0; i < num_samples; ++i) {
+        unsigned int j;
+        for (j = 0; j < servos.length; ++j) {
             if (i == servos.servo[j].start) {
                 // block that sets a pin
                 cbs[cbi].TI = (1 << 26) | (5 << 16) | (1 << 6); // wait response??
@@ -131,9 +136,20 @@ servo_update_cb(void)
     // last block needs to be connected to the first one
     cbs[cbi - 1].NEXTCONBK = dma_virt_to_phy(&cbs_data, &cbs[0]);
 
-    DMA_14->CS |= /*(1 << 31)*/(1 << 29) | (1 << 1); // disable debug and clear end flag
-	DMA_14->CONBLK_AD = dma_virt_to_phy(&cbs_data, cbs);
+    DMA_14->CS = 1 << 31; // reset signal + all other bits reset
+    DMA_14->CS |= (1 << 29) | (1 << 1); // disable debug and clear end flag
+	DMA_14->CONBLK_AD = dma_virt_to_phy(&cbs_data, &cbs[0]);
     dma_enable(DMA_14);
+
+    // free old memory blocks
+    if (prev_gpio_masks_data.mem != NULL) {
+        dma_free_phy_mem(&prev_gpio_masks_data);
+    }
+    if (prev_cbs_data.mem != NULL) {
+        dma_free_phy_mem(&prev_cbs_data);
+    }
+
+    return 1;
 }
 
 int
@@ -141,15 +157,12 @@ servo_add(uint32_t pin)
 {
     if (servos.servo == NULL) {
         servos.servo = malloc(sizeof(struct servo));
-        if (servos.servo == NULL) {
-            return -1;
-        }
     } else {
         servos.servo = realloc(servos.servo, (servos.length+1) * sizeof(struct servo));
-        if (servos.servo == NULL) {
-            return -1;
-        }
+    }
 
+    if (servos.servo == NULL) {
+        return -1;
     }
 
     servos.servo[servos.length].pin = pin;
@@ -161,9 +174,11 @@ servo_add(uint32_t pin)
 int
 servo_remove(uint32_t pin)
 {
-    for (unsigned int i = 0; i < servos.length; ++i) {
+    unsigned int i;
+    for (i = 0; i < servos.length; ++i) {
         if (servos.servo[i].pin == pin) {
-            for (unsigned int j = i; j < servos.length - 1; ++j) {
+            unsigned int j;
+            for (j = i; j < servos.length - 1; ++j) {
                 servos.servo[j] = servos.servo[j + 1];
             }
             servos.servo = realloc(servos.servo, (servos.length-1) * sizeof(struct servo));
@@ -179,12 +194,11 @@ servo_remove(uint32_t pin)
 int
 servo_set(uint32_t pin, unsigned int pulsewidth)
 {
-    for (unsigned int i = 0; i < servos.length; ++i) {
+    unsigned int i;
+    for (i = 0; i < servos.length; ++i) {
         if (servos.servo[i].pin == pin) {
             servos.servo[i].start = 0;
             servos.servo[i].stop = pulsewidth;
-
-            servo_update_cb();
 
             return pin;
         }

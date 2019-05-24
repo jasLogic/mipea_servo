@@ -1,5 +1,3 @@
-- add example
-- in servo_update_cb():
-    - stop and remove old dma and blocks after new ones are created
-    to remove gitter
+- fix warnings
 - Makefile
+- updates in thread
